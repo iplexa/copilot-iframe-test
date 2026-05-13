@@ -1,36 +1,22 @@
 <!DOCTYPE html>
 <!--
-=============================================================================
-  SimpleOne Copilot — автономный модальный виджет (MVP)
-=============================================================================
-
-  АРХИТЕКТУРНОЕ СООТВЕТСТВИЕ В SIMPLEONE
-  ───────────────────────────────────────
-  Этот файл предназначен для встраивания одним из двух способов:
-
-  1. Widget (Виджет):
-     - Создайте новый виджет в SimpleOne Studio (sw_widget).
-     - Вставьте содержимое <body> в поле «HTML Template» виджета.
-     - Перенесите <style> в поле «CSS» виджета.
-     - Перенесите <script> в поле «Client Script» виджета.
-     - Параметры (record_id, table_name, number) передавайте через
-       объект options виджета: widget.options.record_id и т.д.
-
-  2. UI Action (Кнопка, открывающая модалку с iframe):
-     - UI Action вызывает g_modal.showURL(url) или openModalIFrame(url),
-       добавляя к URL параметры: table_name, record_id, number, simpleone_origin.
-     - Этот файл (или его сборка) размещается на сервере/CDN и загружается
-       в <iframe> внутри модального окна SimpleOne.
-     - Ответные события из iframe принимаются через window.addEventListener('message').
-       UI Action обрабатывает:
-         copilot.insert_solution  → s_form.setValue('close_notes', e.data.payload.text)
-         copilot.close_modal      → g_modal.close()
-
-  ДАННЫЕ
-  ──────
-  Все KB-статьи, похожие заявки и ответы чат-бота — жёстко заданные
-  mock-данные. Реальных вызовов к бэкенду или LLM нет.
-=============================================================================
+// SIMPLEONE COPILOT FRONTEND
+// postMessage contract version: 1.0
+// Compatible with: copilot_ui_action.js
+//
+// АРХИТЕКТУРНОЕ СООТВЕТСТВИЕ В SIMPLEONE
+// ───────────────────────────────────────
+// Этот файл встраивается в iframe модального окна SimpleOne UI Action.
+// UI Action передаёт параметры в URL: table_name, record_id, number, subject, simpleone_origin.
+// Затем шлёт handshake: { type:'copilot.handshake', payload:{ record_id, table_name, csrf_token } }
+//
+// Исходящие события (iframe → SimpleOne):
+//   copilot.insert_solution  → payload: { text }
+//   copilot.close_modal      → без payload
+//   copilot.link_ticket      → payload: { related_record_id, related_number }
+//   copilot.feedback         → payload: { value:'helpful'|'not_helpful'|'applied', source_type, source_id }
+//
+// Все postMessage отправляются строго на simpleone_origin из URL-параметра.
 -->
 <html lang="ru">
 <head>
@@ -38,413 +24,280 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Копайлот</title>
   <style>
-    /* ── Reset & base ─────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; }
     body {
       font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 14px;
-      color: #1a2236;
+      color: #1e293b;
       background: #fff;
       overflow: hidden;
     }
     button, textarea { font: inherit; }
     ul { list-style: none; }
-    a  { color: inherit; text-decoration: none; }
+    a  { text-decoration: none; }
 
-    /* ── Modal shell ──────────────────────────────────────── */
-    #copilot-modal {
+    /* ── Modal ──────────────────────────────── */
+    #copilot {
       display: flex;
       flex-direction: column;
       height: 100vh;
-      min-width: 600px;
       background: #fff;
     }
 
-    /* ── Header ───────────────────────────────────────────── */
+    /* ── Header ─────────────────────────────── */
     .cp-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 14px 20px;
-      border-bottom: 1px solid #e4e9f2;
+      gap: 16px;
+      padding: 14px 24px;
+      border-bottom: 1px solid #e2e8f0;
       flex-shrink: 0;
     }
-
-    .cp-header-brand {
-      display: flex;
-      align-items: center;
-      gap: 9px;
+    .cp-header-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .cp-logo { flex-shrink: 0; width: 28px; height: 28px; }
+    .cp-logo svg { width: 28px; height: 28px; }
+    .cp-title { font-size: 16px; font-weight: 700; color: #1e293b; }
+    .cp-subtitle { display: flex; align-items: center; gap: 7px; margin-top: 3px; flex-wrap: wrap; }
+    .cp-ticket-chip {
+      font-size: 11px; font-weight: 700; color: #2563eb;
+      background: #eff6ff; border-radius: 4px; padding: 1px 7px; white-space: nowrap;
     }
-
-    .cp-logo-icon {
-      width: 22px;
-      height: 22px;
-      flex-shrink: 0;
+    .cp-subject-text {
+      font-size: 12px; color: #64748b;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 500px;
     }
+    .cp-header-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
-    .cp-title {
-      font-size: 17px;
-      font-weight: 700;
-      color: #1a2236;
-    }
-
-    .cp-header-actions {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    /* ── Buttons ──────────────────────────────────────────── */
+    /* ── Buttons ────────────────────────────── */
     .cp-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      border: none;
-      border-radius: 7px;
-      padding: 7px 14px;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-      line-height: 1;
-      transition: background .13s, border-color .13s, opacity .13s;
-      white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 6px;
+      border: none; border-radius: 7px; padding: 7px 14px;
+      cursor: pointer; font-size: 13px; font-weight: 600; line-height: 1;
+      transition: background .12s, opacity .12s; white-space: nowrap;
     }
-    .cp-btn:disabled { opacity: .55; cursor: default; }
-
-    .cp-btn-outline {
-      background: #eef2fd;
-      color: #2458e6;
-      border: 1px solid #c7d5f9;
-    }
-    .cp-btn-outline:hover:not(:disabled) { background: #dde6fb; }
-
-    .cp-btn-primary {
-      background: #2458e6;
-      color: #fff;
-      padding: 8px 18px;
-    }
-    .cp-btn-primary:hover:not(:disabled) { background: #1d4ac5; }
-
-    .cp-btn-action {
-      background: #f0f4ff;
-      color: #2458e6;
-      border: 1px solid #d0dcfa;
-      font-size: 13px;
-      margin-top: 10px;
-    }
-    .cp-btn-action:hover { background: #dde6fb; }
-
-    .cp-btn-vote {
-      background: #f4f6fa;
-      color: #5a6479;
-      border: 1px solid #e4e9f2;
-    }
-    .cp-btn-vote:hover { background: #eef2fd; color: #2458e6; border-color: #b3c6f7; }
-    .cp-btn-vote.voted { background: #eef2fd; color: #2458e6; border-color: #2458e6; }
-
-    .cp-btn-ghost {
-      background: #f4f6fa;
-      color: #5a6479;
-    }
-    .cp-btn-ghost:hover { background: #e8ecf4; }
-
+    .cp-btn:disabled { opacity: .5; cursor: default; }
+    .cp-btn-outline { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+    .cp-btn-outline:hover:not(:disabled) { background: #dbeafe; }
+    .cp-btn-primary { background: #2563eb; color: #fff; padding: 8px 18px; }
+    .cp-btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .cp-btn-action  { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; font-size: 12.5px; }
+    .cp-btn-action:hover { background: #dbeafe; }
+    .cp-btn-ghost   { background: #f8fafc; color: #475569; border: 1px solid #e2e8f0; font-size: 12.5px; }
+    .cp-btn-ghost:hover { background: #f1f5f9; }
+    .cp-btn-applied { background: #dcfce7; color: #16a34a; border: 1px solid #bbf7d0; }
     .cp-btn-icon {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 32px;
-      height: 32px;
-      padding: 0;
-      background: none;
-      border: none;
-      border-radius: 7px;
-      cursor: pointer;
-      color: #8494ad;
-      transition: background .13s, color .13s;
+      display: flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; border: none; border-radius: 7px;
+      background: none; cursor: pointer; color: #94a3b8;
+      transition: background .12s, color .12s;
     }
-    .cp-btn-icon:hover { background: #f0f2f7; color: #1a2236; }
-
-    /* ── Tab navigation ───────────────────────────────────── */
-    .cp-body {
-      display: flex;
-      flex-direction: column;
-      flex: 1;
-      overflow: hidden;
+    .cp-btn-icon svg { width: 14px; height: 14px; }
+    .cp-btn-icon:hover { background: #f1f5f9; color: #1e293b; }
+    .cp-spinner {
+      display: inline-block; width: 12px; height: 12px;
+      border: 2px solid #bfdbfe; border-top-color: #2563eb;
+      border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0;
     }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* ── Tabs ───────────────────────────────── */
+    .cp-body { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
     .cp-tabs {
-      display: flex;
-      padding: 0 20px;
-      border-bottom: 1px solid #e4e9f2;
-      flex-shrink: 0;
+      display: flex; padding: 0 24px;
+      border-bottom: 1px solid #e2e8f0; flex-shrink: 0;
     }
-
     .cp-tab {
-      background: none;
-      border: none;
-      border-bottom: 2px solid transparent;
-      padding: 11px 16px;
-      font-size: 13px;
-      font-weight: 600;
-      color: #8494ad;
-      cursor: pointer;
-      margin-bottom: -1px;
-      border-radius: 0;
-      transition: color .13s, border-color .13s;
+      background: none; border: none; border-bottom: 2px solid transparent;
+      padding: 11px 16px; font-size: 13px; font-weight: 600;
+      color: #94a3b8; cursor: pointer; margin-bottom: -1px;
+      transition: color .12s, border-color .12s;
     }
-    .cp-tab:hover { color: #2458e6; }
-    .cp-tab[aria-selected="true"] { color: #2458e6; border-bottom-color: #2458e6; }
+    .cp-tab:hover { color: #2563eb; }
+    .cp-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
 
     .cp-panel {
-      display: none;
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px 20px;
-      background: #f6f8fc;
+      flex: 1; overflow-y: auto;
+      padding: 16px 24px; background: #f8f9fa; display: none;
     }
-    .cp-panel.active { display: flex; flex-direction: column; }
+    .cp-panel.active { display: block; }
+    #panel-chat.active { display: flex; flex-direction: column; padding: 0; }
 
-    /* ── Cards ────────────────────────────────────────────── */
-    .cp-card-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
+    /* ── Cards ──────────────────────────────── */
+    .cp-card-list { display: flex; flex-direction: column; gap: 10px; }
     .cp-card {
-      background: #fff;
-      border: 1px solid #e4e9f2;
-      border-radius: 10px;
-      padding: 15px 16px;
-      box-shadow: 0 1px 3px rgba(20,34,80,.05);
+      background: #fff; border: 1px solid #e2e8f0;
+      border-radius: 10px; padding: 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
     }
-
     .cp-card-link {
-      display: block;
-      font-size: 13.5px;
-      font-weight: 600;
-      color: #2458e6;
-      margin-bottom: 7px;
-      line-height: 1.35;
+      display: block; font-size: 13.5px; font-weight: 600;
+      color: #2563eb; margin-bottom: 7px; line-height: 1.35;
     }
     .cp-card-link:hover { text-decoration: underline; }
-
-    .cp-card-text {
-      font-size: 13px;
-      line-height: 1.55;
-      color: #4e5d78;
+    .cp-card-text { font-size: 13px; line-height: 1.6; color: #475569; }
+    .cp-expand-btn {
+      background: none; border: none; color: #2563eb;
+      font-size: 12.5px; font-weight: 600; cursor: pointer;
+      padding: 0; margin-left: 4px;
     }
-
-    /* ── Ticket badge ─────────────────────────────────────── */
-    .cp-ticket-meta {
-      display: flex;
-      align-items: baseline;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 8px;
+    .cp-expand-btn:hover { text-decoration: underline; }
+    .cp-card-actions {
+      display: flex; align-items: center;
+      flex-wrap: wrap; gap: 8px; margin-top: 12px;
     }
-
+    .cp-ticket-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
     .cp-badge {
-      font-size: 11.5px;
-      font-weight: 700;
-      color: #2458e6;
-      background: #eef2fd;
-      border-radius: 5px;
-      padding: 2px 8px;
-      white-space: nowrap;
+      font-size: 11px; font-weight: 700; color: #2563eb;
+      background: #eff6ff; border-radius: 4px; padding: 2px 8px; white-space: nowrap;
     }
+    .cp-ticket-desc { font-size: 13.5px; font-weight: 600; color: #1e293b; }
 
-    .cp-ticket-desc {
-      font-size: 13.5px;
-      font-weight: 600;
-      color: #1a2236;
+    /* Feedback */
+    .cp-feedback-row { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+    .cp-feedback-label { font-size: 12px; color: #94a3b8; }
+    .cp-vote-btn {
+      background: none; border: 1px solid #e2e8f0; border-radius: 6px;
+      padding: 3px 8px; cursor: pointer; font-size: 13px; line-height: 1;
+      transition: background .12s, border-color .12s;
     }
+    .cp-vote-btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
+    .cp-vote-btn.active { background: #eff6ff; border-color: #2563eb; }
 
-    /* ── Skeleton loader ──────────────────────────────────── */
-    .sk-line, .sk-btn {
-      border-radius: 5px;
-      background: linear-gradient(90deg, #eef1f7 25%, #f5f7fb 50%, #eef1f7 75%);
+    /* ── Skeleton ───────────────────────────── */
+    .sk {
+      height: 12px; border-radius: 5px;
+      background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
       background-size: 200% 100%;
-      animation: shimmer 1.5s ease-in-out infinite;
+      animation: shimmer 1.4s ease-in-out infinite;
+      margin-bottom: 9px;
     }
-    .sk-line { height: 12px; margin-bottom: 8px; }
-    .sk-btn  { height: 28px; width: 140px; margin-top: 10px; }
-    .sk-w60  { width: 60%; }
+    .sk-w40  { width: 40%; }
+    .sk-w55  { width: 55%; }
     .sk-w80  { width: 80%; }
     .sk-w100 { width: 100%; }
-
+    .sk-btn  { height: 28px; width: 150px; margin-top: 12px; margin-bottom: 0; }
     @keyframes shimmer {
       0%   { background-position:  200% 0; }
       100% { background-position: -200% 0; }
     }
 
-    /* ── Chat ─────────────────────────────────────────────── */
-    #panel-chat {
-      gap: 12px;
-    }
-
+    /* ── Chat ───────────────────────────────── */
+    .cp-chat { display: flex; flex-direction: column; height: 100%; }
     .cp-chat-messages {
-      flex: 1;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding-bottom: 4px;
+      flex: 1; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 16px 24px;
     }
-
-    .cp-msg { display: flex; }
+    .cp-msg { display: flex; align-items: flex-start; gap: 9px; }
     .cp-msg-bot  { justify-content: flex-start; }
-    .cp-msg-user { justify-content: flex-end; }
-
+    .cp-msg-user { justify-content: flex-end; flex-direction: row-reverse; }
+    .cp-avatar {
+      flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+      background: #2563eb; color: #fff; font-size: 10px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center; margin-top: 2px;
+    }
+    .cp-msg-body { display: flex; flex-direction: column; gap: 5px; max-width: 76%; }
     .cp-msg-bubble {
-      max-width: 78%;
-      padding: 9px 13px;
-      font-size: 13px;
-      line-height: 1.5;
-      border-radius: 12px;
+      display: inline-block; padding: 9px 13px;
+      border-radius: 10px; font-size: 13px; line-height: 1.55;
     }
-
     .cp-msg-bot .cp-msg-bubble {
-      background: #fff;
-      border: 1px solid #e4e9f2;
-      color: #1a2236;
-      border-radius: 2px 12px 12px 12px;
-      box-shadow: 0 1px 3px rgba(20,34,80,.05);
+      background: #fff; border: 1px solid #e2e8f0; color: #1e293b;
+      border-radius: 2px 10px 10px 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
     }
-
     .cp-msg-user .cp-msg-bubble {
-      background: #2458e6;
-      color: #fff;
-      border-radius: 12px 2px 12px 12px;
+      background: #2563eb; color: #fff;
+      border-radius: 10px 2px 10px 10px;
     }
-
-    /* Typing dots */
     .cp-typing {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 11px 14px;
-      background: #fff;
-      border: 1px solid #e4e9f2;
-      border-radius: 2px 12px 12px 12px;
+      display: inline-flex; align-items: center; gap: 4px; padding: 11px 14px;
     }
     .cp-typing span {
-      display: inline-block;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: #8494ad;
-      animation: blink 1.2s ease-in-out infinite;
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: #94a3b8; animation: blink 1.3s ease-in-out infinite;
     }
     .cp-typing span:nth-child(2) { animation-delay: .2s; }
     .cp-typing span:nth-child(3) { animation-delay: .4s; }
-
     @keyframes blink {
-      0%, 80%, 100% { opacity: .3; transform: scale(.85); }
-      40%            { opacity: 1;  transform: scale(1.1); }
+      0%, 80%, 100% { opacity: .25; transform: scale(.8); }
+      40%            { opacity: 1;   transform: scale(1.1); }
     }
-
+    .cp-citations { display: flex; flex-wrap: wrap; gap: 5px; }
+    .cp-citation-chip {
+      font-size: 11.5px; font-weight: 600; color: #2563eb;
+      background: #eff6ff; border: 1px solid #bfdbfe;
+      border-radius: 20px; padding: 2px 10px; cursor: pointer;
+      transition: background .12s;
+    }
+    .cp-citation-chip:hover { background: #dbeafe; }
     .cp-chat-input-row {
-      display: flex;
-      align-items: flex-end;
-      gap: 8px;
-      flex-shrink: 0;
+      display: flex; align-items: flex-end; gap: 8px;
+      padding: 12px 24px; border-top: 1px solid #e2e8f0;
+      background: #fff; flex-shrink: 0;
     }
-
     .cp-chat-input {
-      flex: 1;
-      border: 1px solid #d7deea;
-      border-radius: 8px;
-      padding: 8px 12px;
-      resize: none;
-      font-size: 13px;
-      line-height: 1.45;
-      color: #1a2236;
-      outline: none;
-      transition: border-color .13s;
+      flex: 1; border: 1px solid #cbd5e1; border-radius: 8px;
+      padding: 8px 12px; resize: none; font-size: 13px; line-height: 1.45;
+      color: #1e293b; outline: none; transition: border-color .12s;
     }
-    .cp-chat-input:focus { border-color: #2458e6; }
+    .cp-chat-input:focus { border-color: #2563eb; }
 
-    /* ── Footer ───────────────────────────────────────────── */
+    /* ── Footer ─────────────────────────────── */
     .cp-footer {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 12px 20px;
-      border-top: 1px solid #e4e9f2;
-      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 11px 24px;
+      border-top: 1px solid #e2e8f0; background: #fff; flex-shrink: 0;
     }
-
-    .cp-feedback {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      flex-wrap: wrap;
-    }
-
-    .cp-feedback-label {
-      font-size: 12.5px;
-      color: #8494ad;
-    }
+    .cp-ai-status { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: #64748b; }
+    .cp-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .cp-status-dot.online  { background: #22c55e; box-shadow: 0 0 0 2px #dcfce7; }
+    .cp-status-dot.offline { background: #ef4444; box-shadow: 0 0 0 2px #fee2e2; }
   </style>
 </head>
 <body>
-
-<div id="copilot-modal">
+<div id="copilot">
 
   <!-- HEADER -->
   <header class="cp-header">
-    <div class="cp-header-brand">
-      <svg class="cp-logo-icon" viewBox="0 0 20 20" fill="none">
-        <circle cx="10" cy="10" r="8" fill="#2458e6" opacity=".12"/>
-        <path d="M10 4l1.5 4.5H16l-3.75 2.7 1.44 4.3L10 13.1l-3.69 2.4 1.44-4.3L4 8.5h4.5L10 4z" fill="#2458e6"/>
-      </svg>
-      <h1 class="cp-title">Копайлот</h1>
+    <div class="cp-header-left">
+      <div class="cp-logo">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" fill="#2563eb" opacity=".15"/>
+          <path d="M12 5l2 5.5h5.5l-4.5 3.2 1.7 5.3L12 16l-4.7 3 1.7-5.3L4.5 10.5H10L12 5z" fill="#2563eb"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="cp-title">Копайлот</h1>
+        <div class="cp-subtitle" id="header-subtitle"></div>
+      </div>
     </div>
-    <div class="cp-header-actions">
+    <div class="cp-header-right">
       <button class="cp-btn cp-btn-outline" id="btn-summarize">Суммировать заявку</button>
       <button class="cp-btn-icon" id="btn-close" aria-label="Закрыть">
-        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8">
-          <line x1="3" y1="3" x2="13" y2="13"/>
-          <line x1="13" y1="3" x2="3" y2="13"/>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <line x1="3" y1="3" x2="13" y2="13"/><line x1="13" y1="3" x2="3" y2="13"/>
         </svg>
       </button>
     </div>
   </header>
 
-  <!-- BODY: tabs + panels -->
+  <!-- TABS -->
   <div class="cp-body">
     <nav class="cp-tabs" role="tablist">
-      <button class="cp-tab" role="tab" aria-selected="true"  data-tab="hints"  >Подсказки ИИ</button>
-      <button class="cp-tab" role="tab" aria-selected="false" data-tab="similar">Похожие заявки</button>
-      <button class="cp-tab" role="tab" aria-selected="false" data-tab="chat"   >Чат</button>
+      <button class="cp-tab active" role="tab" aria-selected="true"  data-panel="panel-hints">Подсказки ИИ</button>
+      <button class="cp-tab"        role="tab" aria-selected="false" data-panel="panel-similar">Похожие заявки</button>
+      <button class="cp-tab"        role="tab" aria-selected="false" data-panel="panel-chat">Чат</button>
     </nav>
 
     <!-- Panel: Подсказки ИИ -->
     <div class="cp-panel active" id="panel-hints" role="tabpanel">
-      <!-- Skeleton loader — заменяется контентом через setTimeout -->
       <ul class="cp-card-list" id="hints-skeleton">
-        <li class="cp-card">
-          <div class="sk-line sk-w60"></div>
-          <div class="sk-line sk-w100"></div>
-          <div class="sk-line sk-w80"></div>
-          <div class="sk-btn"></div>
-        </li>
-        <li class="cp-card">
-          <div class="sk-line sk-w60"></div>
-          <div class="sk-line sk-w100"></div>
-          <div class="sk-line sk-w80"></div>
-          <div class="sk-btn"></div>
-        </li>
-        <li class="cp-card">
-          <div class="sk-line sk-w60"></div>
-          <div class="sk-line sk-w100"></div>
-          <div class="sk-line sk-w80"></div>
-          <div class="sk-btn"></div>
-        </li>
+        <li class="cp-card"><div class="sk sk-w55"></div><div class="sk sk-w100"></div><div class="sk sk-w80"></div><div class="sk sk-btn"></div></li>
+        <li class="cp-card"><div class="sk sk-w55"></div><div class="sk sk-w100"></div><div class="sk sk-w80"></div><div class="sk sk-btn"></div></li>
+        <li class="cp-card"><div class="sk sk-w55"></div><div class="sk sk-w100"></div><div class="sk sk-w80"></div><div class="sk sk-btn"></div></li>
       </ul>
       <ul class="cp-card-list" id="hints-content" style="display:none"></ul>
     </div>
@@ -456,265 +309,350 @@
 
     <!-- Panel: Чат -->
     <div class="cp-panel" id="panel-chat" role="tabpanel">
-      <div class="cp-chat-messages" id="chat-messages"></div>
-      <div class="cp-chat-input-row">
-        <textarea
-          class="cp-chat-input"
-          id="chat-input"
-          rows="2"
-          placeholder="Введите сообщение… (Enter — отправить)"
-        ></textarea>
-        <button class="cp-btn cp-btn-primary" id="btn-send">Отправить</button>
+      <div class="cp-chat">
+        <div class="cp-chat-messages" id="chat-messages"></div>
+        <div class="cp-chat-input-row">
+          <textarea class="cp-chat-input" id="chat-input" rows="2" placeholder="Введите сообщение… (Enter — отправить)"></textarea>
+          <button class="cp-btn cp-btn-primary" id="btn-send">Отправить</button>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- FOOTER -->
   <footer class="cp-footer">
-    <div class="cp-feedback">
-      <span class="cp-feedback-label">Полезно?</span>
-      <button class="cp-btn cp-btn-vote" data-vote="up">👍 Полезно</button>
-      <button class="cp-btn cp-btn-vote" data-vote="down">👎 Не полезно</button>
+    <button class="cp-btn cp-btn-outline" id="btn-applied">Применено ✓</button>
+    <div class="cp-ai-status">
+      <span class="cp-status-dot online" id="ai-status-dot"></span>
+      <span id="ai-status-text">ИИ доступен</span>
     </div>
-    <button class="cp-btn cp-btn-ghost" id="btn-close-footer">Закрыть</button>
   </footer>
 
-</div><!-- /#copilot-modal -->
+</div>
 
 <script>
 (function () {
   'use strict';
 
-  /* ── postMessage bridge ─────────────────────────────────── */
-  var ctx = (function () {
-    var q = new URLSearchParams(location.search);
-    function origin(v) { try { return new URL(v).origin; } catch (e) { return ''; } }
-    return {
-      tableName:       q.get('table_name')       || '',
-      recordId:        q.get('record_id')         || '',
-      number:          q.get('number')            || '',
-      simpleoneOrigin: origin(q.get('simpleone_origin') || ''),
-    };
-  }());
+  /* ── URL context & postMessage bridge ──────────────────── */
+  var q = new URLSearchParams(location.search);
+  function origin(v) { try { return new URL(v).origin; } catch (e) { return ''; } }
 
-  var isIframe = window.parent !== window;
-  var targetOrigin = ctx.simpleoneOrigin || '*';
+  var SO_ORIGIN = origin(q.get('simpleone_origin') || '');
+  var ctx = {
+    tableName: q.get('table_name') || '',
+    recordId:  q.get('record_id')  || '',
+    number:    q.get('number')     || '',
+    subject:   q.get('subject')    || 'Не удаётся войти в корпоративный портал',
+    csrfToken: '',
+  };
 
-  function post(type, extra) {
-    if (!isIframe) return;
-    window.parent.postMessage(
-      { type: type, payload: Object.assign({
-          table_name: ctx.tableName,
-          record_id:  ctx.recordId,
-          number:     ctx.number,
-        }, extra) },
-      targetOrigin
-    );
+  // Incoming handshake
+  window.addEventListener('message', function (e) {
+    if (SO_ORIGIN && e.origin !== SO_ORIGIN) return;
+    if (!e.data || e.data.type !== 'copilot.handshake') return;
+    var p = e.data.payload || {};
+    if (p.record_id)   ctx.recordId  = p.record_id;
+    if (p.table_name)  ctx.tableName = p.table_name;
+    if (p.csrf_token)  ctx.csrfToken = p.csrf_token;
+  });
+
+  function post(type, payload) {
+    if (window.parent === window || !SO_ORIGIN) return;
+    window.parent.postMessage({ type: type, payload: payload || {} }, SO_ORIGIN);
   }
 
-  function closeModal() { post('copilot.close_modal'); }
-  function insertSolution(text) { post('copilot.insert_solution', { text: text }); }
+  function closeModal()   { post('copilot.close_modal'); }
+  function insertSolution(text, srcType, srcId) {
+    post('copilot.insert_solution', { text: text });
+    setApplied();
+  }
+  function sendFeedback(value, srcType, srcId) {
+    post('copilot.feedback', { value: value, source_type: srcType, source_id: srcId });
+  }
+  function linkTicket(relRecordId, relNumber) {
+    post('copilot.link_ticket', { related_record_id: relRecordId, related_number: relNumber });
+  }
 
-  /* ── Mock data ──────────────────────────────────────────── */
-  var KB_ARTICLES = [
-    {
-      title:    'Сброс пароля в корпоративной сети',
-      excerpt:  'Для сброса пароля сотрудника необходимо перейти в AD Users and Computers, найти учётную запись и выполнить сброс через контекстное меню. Убедитесь, что пользователь авторизован для смены пароля при следующем входе.',
-      solution: 'Выполнен сброс пароля через AD Users and Computers. Пользователю отправлена инструкция по смене пароля при следующем входе. Учётная запись разблокирована.',
-    },
-    {
-      title:    'Настройка VPN-подключения для удалённых сотрудников',
-      excerpt:  'Инструкция по настройке корпоративного VPN-клиента на Windows 10/11. Включает установку сертификатов и конфигурацию профиля подключения для безопасного доступа к внутренним ресурсам компании.',
-      solution: 'Установлен VPN-клиент версии 4.2.1, настроен профиль подключения с использованием корпоративного сертификата. Подключение проверено и работает стабильно.',
-    },
-    {
-      title:    'Восстановление доступа к корпоративной почте',
-      excerpt:  'При блокировке учётной записи Exchange необходимо выполнить разблокировку через EAC. Проверьте политику паролей и статус лицензии пользователя в Microsoft 365 Admin Center.',
-      solution: 'Учётная запись Exchange разблокирована через EAC. Проверена и скорректирована политика паролей. Лицензия Office 365 активна, доступ к почте восстановлен.',
-    },
+  /* ── Header subtitle ───────────────────────────────────── */
+  (function () {
+    var sub = document.getElementById('header-subtitle');
+    if (!sub) return;
+    var html = '';
+    if (ctx.number)  html += '<span class="cp-ticket-chip">' + esc(ctx.number) + '</span>';
+    if (ctx.subject) html += '<span class="cp-subject-text">' + esc(ctx.subject) + '</span>';
+    sub.innerHTML = html;
+  }());
+
+  /* ── Mock data ─────────────────────────────────────────── */
+  var KB = [
+    { id:'kb-001', title:'Сброс пароля в корпоративной сети AD', url:'#kb-001',
+      excerpt:'Для сброса пароля перейдите в AD Users and Computers, найдите учётную запись и выполните сброс через контекстное меню. Убедитесь, что у пользователя включена опция «Сменить пароль при следующем входе».',
+      solution:'Выполнен сброс пароля через AD Users and Computers. Пользователю отправлена инструкция по смене пароля при следующем входе. Учётная запись разблокирована.' },
+    { id:'kb-002', title:'Настройка VPN-подключения для удалённых сотрудников', url:'#kb-002',
+      excerpt:'Инструкция по установке корпоративного VPN-клиента на Windows 10/11. Включает конфигурацию профиля и установку сертификата для безопасного доступа к внутренним ресурсам.',
+      solution:'Установлен VPN-клиент версии 4.2.1, настроен профиль с корпоративным сертификатом. Подключение проверено и работает стабильно.' },
+    { id:'kb-003', title:'Восстановление доступа к Exchange / Microsoft 365', url:'#kb-003',
+      excerpt:'При блокировке учётной записи Exchange выполните разблокировку через EAC. Проверьте политику паролей и статус лицензии в Microsoft 365 Admin Center.',
+      solution:'Учётная запись Exchange разблокирована через EAC. Политика паролей скорректирована. Лицензия Office 365 активна, доступ восстановлен.' },
   ];
 
-  var SIMILAR_TICKETS = [
-    {
-      number:      'INC0041872',
-      description: 'Не работает авторизация в корпоративном портале',
-      resolution:  'Выполнен сброс сессии пользователя, очищен кэш браузера. Проблема связана с устаревшим токеном авторизации. После повторного входа доступ восстановлен.',
-    },
-    {
-      number:      'INC0038541',
-      description: 'Запрос на сброс пароля для нового сотрудника',
-      resolution:  'Создана учётная запись в AD, выдан временный пароль. Пользователю отправлено письмо с инструкцией по первому входу и обязательной смене пароля через самосервисный портал.',
-    },
-    {
-      number:      'INC0035209',
-      description: 'Не удаётся подключиться к VPN из домашней сети',
-      resolution:  'Переустановлен VPN-клиент, обновлены сертификаты пользователя. Проблема заключалась в истёкшем сертификате. VPN-подключение восстановлено и протестировано.',
-    },
+  var TICKETS = [
+    { id:'inc-001', number:'INC0041872', recordId:'a1b2c3d4e5f6',
+      description:'Не работает авторизация в корпоративном портале',
+      resolution:'Выполнен сброс сессии пользователя, очищен кэш браузера. Проблема связана с устаревшим токеном авторизации. После повторного входа доступ восстановлен в полном объёме.' },
+    { id:'inc-002', number:'INC0038541', recordId:'b2c3d4e5f6a1',
+      description:'Запрос на сброс пароля для нового сотрудника',
+      resolution:'Создана учётная запись в AD, выдан временный пароль. Пользователю отправлено письмо с инструкцией по первому входу и обязательной смене пароля через самосервисный портал.' },
+    { id:'inc-003', number:'INC0035209', recordId:'c3d4e5f6a1b2',
+      description:'Не удаётся подключиться к VPN из домашней сети',
+      resolution:'Переустановлен VPN-клиент, обновлены сертификаты пользователя. Причина — истёкший клиентский сертификат. VPN-подключение восстановлено и протестировано.' },
   ];
 
-  var BOT_REPLIES = [
-    'На основе описания заявки рекомендую проверить настройки учётной записи в Active Directory — возможна блокировка или истечение срока пароля.',
-    'Похожие инциденты чаще всего решаются перезапуском службы или очисткой кэша браузера. Попробуйте эти шаги и сообщите о результате.',
-    'Для данной категории заявок средний SLA составляет 4 часа. Рекомендую эскалировать в L2, если проблема не решена за 2 часа.',
-    'Нашёл 3 похожие заявки в базе. Наиболее вероятное решение — сброс пароля и проверка прав доступа пользователя.',
+  var BOT = [
+    { text:'На основе описания рекомендую проверить учётную запись в Active Directory — вероятна блокировка или истечение срока пароля.',
+      cit:[{label:'KB: Сброс пароля AD',id:'kb-001'},{label:'INC0041872',id:'inc-001'}] },
+    { text:'Похожие инциденты решались перезапуском службы или очисткой кэша браузера. Попробуйте эти шаги и сообщите о результате.',
+      cit:[{label:'INC0038541',id:'inc-002'}] },
+    { text:'Для данной категории заявок средний SLA — 4 часа. Рекомендую эскалировать в L2, если проблема не решена за 2 часа.',
+      cit:[] },
+    { text:'Нашёл 3 похожие заявки. Наиболее вероятное решение — сброс пароля и проверка прав доступа.',
+      cit:[{label:'KB: VPN-подключение',id:'kb-002'},{label:'INC0035209',id:'inc-003'}] },
   ];
 
-  /* ── Tab switching ──────────────────────────────────────── */
-  var tabBtns  = document.querySelectorAll('.cp-tab');
-  var panels   = document.querySelectorAll('.cp-panel');
+  /* ── Tabs ──────────────────────────────────────────────── */
+  var tabBtns = document.querySelectorAll('.cp-tab');
+  var panels  = document.querySelectorAll('.cp-panel');
 
   tabBtns.forEach(function (btn) {
     btn.addEventListener('click', function () {
-      var target = btn.dataset.tab;
-      tabBtns.forEach(function (b) { b.setAttribute('aria-selected', 'false'); });
-      panels.forEach(function (p)  { p.classList.remove('active'); });
-      btn.setAttribute('aria-selected', 'true');
-      document.getElementById('panel-' + target).classList.add('active');
+      tabBtns.forEach(function (b) { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
+      panels.forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected','true');
+      document.getElementById(btn.dataset.panel).classList.add('active');
     });
   });
 
-  /* ── Hints tab: skeleton → content ─────────────────────── */
-  function buildHints() {
-    var list = document.getElementById('hints-content');
-    KB_ARTICLES.forEach(function (a) {
-      var li = document.createElement('li');
-      li.className = 'cp-card';
-      li.innerHTML =
-        '<a href="#" class="cp-card-link">' + escHtml(a.title) + '</a>' +
-        '<p class="cp-card-text">' + escHtml(a.excerpt) + '</p>';
-      var btn = document.createElement('button');
-      btn.className = 'cp-btn cp-btn-action';
-      btn.textContent = 'Вставить решение';
-      btn.addEventListener('click', function () { insertSolution(a.solution); });
-      li.appendChild(btn);
-      list.appendChild(li);
-    });
-    document.querySelectorAll('.cp-card-link').forEach(function (a) {
-      a.addEventListener('click', function (e) { e.preventDefault(); });
-    });
-  }
-
+  /* ── Hints tab ─────────────────────────────────────────── */
   setTimeout(function () {
     document.getElementById('hints-skeleton').style.display = 'none';
-    document.getElementById('hints-content').style.display  = '';
-  }, 1300);
-
-  buildHints();
-
-  /* ── Similar tickets tab ────────────────────────────────── */
-  (function buildSimilar() {
-    var list = document.getElementById('similar-content');
-    SIMILAR_TICKETS.forEach(function (t) {
+    var list = document.getElementById('hints-content');
+    list.style.display = '';
+    KB.forEach(function (a) {
       var li = document.createElement('li');
       li.className = 'cp-card';
       li.innerHTML =
-        '<div class="cp-ticket-meta">' +
-          '<span class="cp-badge">' + escHtml(t.number) + '</span>' +
-          '<span class="cp-ticket-desc">' + escHtml(t.description) + '</span>' +
-        '</div>' +
-        '<p class="cp-card-text">' + escHtml(t.resolution) + '</p>';
-      var btn = document.createElement('button');
-      btn.className = 'cp-btn cp-btn-action';
-      btn.textContent = 'Клонировать решение';
-      btn.addEventListener('click', function () { insertSolution(t.resolution); });
-      li.appendChild(btn);
+        '<a href="' + esc(a.url) + '" class="cp-card-link" target="_blank" rel="noreferrer">' + esc(a.title) + '</a>' +
+        '<p class="cp-card-text">' + esc(a.excerpt) + '</p>';
+      var actions = document.createElement('div');
+      actions.className = 'cp-card-actions';
+      var ins = makeBtn('cp-btn cp-btn-action', 'Вставить решение', function () { insertSolution(a.solution,'kb_article',a.id); });
+      actions.appendChild(ins);
+      actions.appendChild(makeFeedbackRow('kb_article', a.id));
+      li.appendChild(actions);
+      list.appendChild(li);
+    });
+  }, 1000);
+
+  /* ── Similar tab ───────────────────────────────────────── */
+  (function () {
+    var list = document.getElementById('similar-content');
+    var SHORT = 120;
+    TICKETS.forEach(function (t) {
+      var li = document.createElement('li');
+      li.className = 'cp-card';
+      var expanded = false;
+      var isLong = t.resolution.length > SHORT;
+      var shortText = isLong ? t.resolution.slice(0, SHORT) + '…' : t.resolution;
+
+      var meta = '<div class="cp-ticket-meta"><span class="cp-badge">' + esc(t.number) + '</span><span class="cp-ticket-desc">' + esc(t.description) + '</span></div>';
+      var p = document.createElement('p');
+      p.className = 'cp-card-text';
+      p.textContent = shortText;
+
+      var expandBtn;
+      if (isLong) {
+        expandBtn = document.createElement('button');
+        expandBtn.className = 'cp-expand-btn';
+        expandBtn.textContent = ' Показать полностью';
+        expandBtn.addEventListener('click', function () {
+          expanded = !expanded;
+          p.textContent = expanded ? t.resolution : shortText;
+          if (expanded) p.appendChild(expandBtn);
+          expandBtn.textContent = expanded ? ' Свернуть' : ' Показать полностью';
+        });
+        p.appendChild(expandBtn);
+      }
+
+      li.innerHTML = meta;
+      li.appendChild(p);
+
+      var actions = document.createElement('div');
+      actions.className = 'cp-card-actions';
+      actions.appendChild(makeBtn('cp-btn cp-btn-action', 'Клонировать решение', function () { insertSolution(t.resolution,'similar_ticket',t.id); }));
+      actions.appendChild(makeBtn('cp-btn cp-btn-ghost', 'Связать заявку', function () { linkTicket(t.recordId, t.number); }));
+      actions.appendChild(makeFeedbackRow('similar_ticket', t.id));
+      li.appendChild(actions);
       list.appendChild(li);
     });
   }());
 
-  /* ── Chat tab ───────────────────────────────────────────── */
-  var chatMessages = document.getElementById('chat-messages');
-  var chatInput    = document.getElementById('chat-input');
-  var btnSend      = document.getElementById('btn-send');
-  var msgCount     = 0;
-  var chatBusy     = false;
+  /* ── Chat tab ──────────────────────────────────────────── */
+  var chatEl   = document.getElementById('chat-messages');
+  var inputEl  = document.getElementById('chat-input');
+  var sendEl   = document.getElementById('btn-send');
+  var botIdx   = 0;
+  var chatBusy = false;
 
-  addBotMessage('Привет! Я Копайлот. Задайте вопрос по текущей заявке.');
+  addBotMsg('Привет! Я Копайлот. Задайте вопрос по текущей заявке — постараюсь помочь.', []);
 
-  function addBotMessage(text) {
-    var div = document.createElement('div');
-    div.className = 'cp-msg cp-msg-bot';
-    div.innerHTML = '<span class="cp-msg-bubble">' + escHtml(text) + '</span>';
-    chatMessages.appendChild(div);
-    scrollChat();
-    return div;
+  function addBotMsg(text, cit) {
+    var row = document.createElement('div');
+    row.className = 'cp-msg cp-msg-bot';
+    var av = document.createElement('div');
+    av.className = 'cp-avatar';
+    av.textContent = 'AI';
+    var body = document.createElement('div');
+    body.className = 'cp-msg-body';
+    var bub = document.createElement('span');
+    bub.className = 'cp-msg-bubble';
+    bub.textContent = text;
+    body.appendChild(bub);
+    if (cit && cit.length) {
+      var citRow = document.createElement('div');
+      citRow.className = 'cp-citations';
+      cit.forEach(function (c) {
+        var a = document.createElement('a');
+        a.className = 'cp-citation-chip';
+        a.href = '#' + c.id;
+        a.textContent = c.label;
+        citRow.appendChild(a);
+      });
+      body.appendChild(citRow);
+    }
+    row.appendChild(av); row.appendChild(body);
+    chatEl.appendChild(row);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return row;
   }
 
-  function addUserMessage(text) {
-    var div = document.createElement('div');
-    div.className = 'cp-msg cp-msg-user';
-    div.innerHTML = '<span class="cp-msg-bubble">' + escHtml(text) + '</span>';
-    chatMessages.appendChild(div);
-    scrollChat();
+  function addUserMsg(text) {
+    var row = document.createElement('div');
+    row.className = 'cp-msg cp-msg-user';
+    var body = document.createElement('div');
+    body.className = 'cp-msg-body';
+    var bub = document.createElement('span');
+    bub.className = 'cp-msg-bubble';
+    bub.textContent = text;
+    body.appendChild(bub);
+    row.appendChild(body);
+    chatEl.appendChild(row);
+    chatEl.scrollTop = chatEl.scrollHeight;
   }
 
-  function showTyping() {
-    var div = document.createElement('div');
-    div.className = 'cp-msg cp-msg-bot';
-    div.innerHTML = '<span class="cp-typing"><span></span><span></span><span></span></span>';
-    chatMessages.appendChild(div);
-    scrollChat();
-    return div;
-  }
-
-  function scrollChat() {
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+  function addTyping() {
+    var row = document.createElement('div');
+    row.className = 'cp-msg cp-msg-bot';
+    var av = document.createElement('div');
+    av.className = 'cp-avatar';
+    av.textContent = 'AI';
+    var body = document.createElement('div');
+    body.className = 'cp-msg-body';
+    var bub = document.createElement('span');
+    bub.className = 'cp-msg-bubble cp-typing';
+    bub.innerHTML = '<span></span><span></span><span></span>';
+    body.appendChild(bub);
+    row.appendChild(av); row.appendChild(body);
+    chatEl.appendChild(row);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return row;
   }
 
   function sendChat() {
-    var text = chatInput.value.trim();
+    var text = inputEl.value.trim();
     if (!text || chatBusy) return;
     chatBusy = true;
-    chatInput.value = '';
-    addUserMessage(text);
-    msgCount++;
-    var typing = showTyping();
-    btnSend.disabled = true;
+    inputEl.value = '';
+    addUserMsg(text);
+    var typing = addTyping();
+    sendEl.disabled = true;
     setTimeout(function () {
       typing.remove();
-      addBotMessage(BOT_REPLIES[msgCount % BOT_REPLIES.length]);
+      var r = BOT[botIdx % BOT.length]; botIdx++;
+      addBotMsg(r.text, r.cit);
       chatBusy = false;
-      btnSend.disabled = false;
-    }, 700);
+      sendEl.disabled = false;
+    }, 800);
   }
 
-  btnSend.addEventListener('click', sendChat);
-  chatInput.addEventListener('keydown', function (e) {
+  sendEl.addEventListener('click', sendChat);
+  inputEl.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
 
-  /* ── Header: summarize ──────────────────────────────────── */
-  var btnSummarize = document.getElementById('btn-summarize');
-  btnSummarize.addEventListener('click', function () {
-    btnSummarize.disabled = true;
-    btnSummarize.textContent = 'Анализирую…';
+  /* ── Header buttons ────────────────────────────────────── */
+  var sumBtn = document.getElementById('btn-summarize');
+  sumBtn.addEventListener('click', function () {
+    sumBtn.disabled = true;
+    sumBtn.innerHTML = '<span class="cp-spinner"></span> Анализирую…';
     setTimeout(function () {
-      btnSummarize.disabled = false;
-      btnSummarize.textContent = 'Суммировать заявку';
-    }, 1800);
+      sumBtn.disabled = false;
+      sumBtn.textContent = 'Суммировать заявку';
+    }, 2000);
   });
 
-  /* ── Close buttons ──────────────────────────────────────── */
   document.getElementById('btn-close').addEventListener('click', closeModal);
-  document.getElementById('btn-close-footer').addEventListener('click', closeModal);
 
-  /* ── Feedback votes ─────────────────────────────────────── */
-  document.querySelectorAll('.cp-btn-vote').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      document.querySelectorAll('.cp-btn-vote').forEach(function (b) {
-        b.classList.remove('voted');
-      });
-      btn.classList.add('voted');
-    });
+  /* ── Footer ────────────────────────────────────────────── */
+  var appliedBtn = document.getElementById('btn-applied');
+  appliedBtn.addEventListener('click', function () {
+    post('copilot.feedback', { value:'applied', source_type:'manual', source_id:'' });
+    setApplied();
   });
 
-  /* ── Utility ────────────────────────────────────────────── */
-  function escHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+  function setApplied() {
+    appliedBtn.classList.remove('cp-btn-outline');
+    appliedBtn.classList.add('cp-btn-applied');
+    appliedBtn.disabled = true;
+  }
+
+  /* ── Helpers ───────────────────────────────────────────── */
+  function makeBtn(cls, label, fn) {
+    var b = document.createElement('button');
+    b.className = cls; b.textContent = label;
+    b.addEventListener('click', fn);
+    return b;
+  }
+
+  function makeFeedbackRow(srcType, srcId) {
+    var row = document.createElement('div');
+    row.className = 'cp-feedback-row';
+    var lbl = document.createElement('span');
+    lbl.className = 'cp-feedback-label';
+    lbl.textContent = 'Полезно?';
+    var up   = makeVoteBtn('👍', 'helpful',     srcType, srcId, row);
+    var down = makeVoteBtn('👎', 'not_helpful', srcType, srcId, row);
+    row.append(lbl, up, down);
+    return row;
+  }
+
+  function makeVoteBtn(emoji, value, srcType, srcId, row) {
+    var b = document.createElement('button');
+    b.className = 'cp-vote-btn';
+    b.textContent = emoji;
+    b.addEventListener('click', function () {
+      row.querySelectorAll('.cp-vote-btn').forEach(function (v) { v.classList.remove('active'); });
+      b.classList.add('active');
+      sendFeedback(value, srcType, srcId);
+    });
+    return b;
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
 }());

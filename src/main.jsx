@@ -1,143 +1,206 @@
-/*
- * SimpleOne Copilot — iframe frontend (React/Vite build)
- *
- * Architecture mapping:
- *   - This file is the entry point served inside the <iframe> of a SimpleOne UI Action modal.
- *   - URL params received from SimpleOne: source, table_name, record_id, number, simpleone_origin.
- *   - postMessage events sent to parent:
- *       copilot.insert_solution  → triggers s_form.setValue('close_notes', payload.text) in the UI Action
- *       copilot.close_modal      → triggers g_modal.close() in the UI Action
- *   - No backend calls are made; all data is hardcoded mock (MVP).
- */
+// SIMPLEONE COPILOT FRONTEND
+// postMessage contract version: 1.0
+// Compatible with: copilot_ui_action.js
+//
+// Incoming (SimpleOne → iframe):
+//   { type: 'copilot.handshake', payload: { record_id, table_name, csrf_token } }
+// Outgoing (iframe → SimpleOne):
+//   { type: 'copilot.insert_solution',  payload: { text } }
+//   { type: 'copilot.close_modal' }
+//   { type: 'copilot.link_ticket',      payload: { related_record_id, related_number } }
+//   { type: 'copilot.feedback',         payload: { value, source_type, source_id } }
 
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-// --- URL context helpers ---
 function getParam(name) {
   return new URLSearchParams(window.location.search).get(name) || '';
 }
-function normalizeOrigin(value) {
-  try { return new URL(value).origin; } catch { return ''; }
+function normalizeOrigin(v) {
+  try { return new URL(v).origin; } catch { return ''; }
 }
 
 // --- Mock data ---
 const KB_ARTICLES = [
   {
-    id: 1,
-    title: 'Сброс пароля в корпоративной сети',
+    id: 'kb-001',
+    title: 'Сброс пароля в корпоративной сети AD',
+    url: '#kb-001',
     excerpt:
-      'Для сброса пароля сотрудника необходимо перейти в AD Users and Computers, найти учётную запись и выполнить сброс через контекстное меню. Убедитесь, что пользователь авторизован для смены пароля при следующем входе.',
+      'Для сброса пароля сотрудника перейдите в AD Users and Computers, найдите учётную запись и выполните сброс через контекстное меню. Убедитесь, что у пользователя включена опция «Сменить пароль при следующем входе».',
     solution:
       'Выполнен сброс пароля через AD Users and Computers. Пользователю отправлена инструкция по смене пароля при следующем входе. Учётная запись разблокирована.',
   },
   {
-    id: 2,
+    id: 'kb-002',
     title: 'Настройка VPN-подключения для удалённых сотрудников',
+    url: '#kb-002',
     excerpt:
-      'Инструкция по настройке корпоративного VPN-клиента на Windows 10/11. Включает установку сертификатов и конфигурацию профиля подключения для безопасного доступа к внутренним ресурсам.',
+      'Инструкция по установке корпоративного VPN-клиента на Windows 10/11. Включает конфигурацию профиля подключения и установку корпоративного сертификата для безопасного доступа.',
     solution:
-      'Установлен VPN-клиент версии 4.2.1, настроен профиль подключения с использованием корпоративного сертификата. Подключение проверено и работает стабильно.',
+      'Установлен VPN-клиент версии 4.2.1, настроен профиль подключения с корпоративным сертификатом. Подключение проверено и работает стабильно.',
   },
   {
-    id: 3,
-    title: 'Восстановление доступа к корпоративной почте',
+    id: 'kb-003',
+    title: 'Восстановление доступа к Exchange / Microsoft 365',
+    url: '#kb-003',
     excerpt:
-      'При блокировке учётной записи Exchange необходимо выполнить разблокировку через EAC. Проверьте политику паролей и статус лицензии пользователя в Microsoft 365 Admin Center.',
+      'При блокировке учётной записи Exchange выполните разблокировку через Exchange Admin Center. Проверьте политику паролей и статус лицензии в Microsoft 365 Admin Center.',
     solution:
-      'Учётная запись Exchange разблокирована через EAC. Проверена и скорректирована политика паролей. Лицензия Office 365 активна, доступ к почте восстановлен.',
+      'Учётная запись Exchange разблокирована через EAC. Политика паролей скорректирована. Лицензия Office 365 активна, доступ к почте восстановлен.',
   },
 ];
 
 const SIMILAR_TICKETS = [
   {
-    id: 1,
+    id: 'inc-001',
     number: 'INC0041872',
+    recordId: 'a1b2c3d4e5f6',
     description: 'Не работает авторизация в корпоративном портале',
     resolution:
-      'Выполнен сброс сессии пользователя, очищен кэш браузера. Проблема связана с устаревшим токеном авторизации. После повторного входа доступ восстановлен.',
+      'Выполнен сброс сессии пользователя, очищен кэш браузера. Проблема связана с устаревшим токеном авторизации. После повторного входа доступ восстановлен в полном объёме.',
   },
   {
-    id: 2,
+    id: 'inc-002',
     number: 'INC0038541',
+    recordId: 'b2c3d4e5f6a1',
     description: 'Запрос на сброс пароля для нового сотрудника',
     resolution:
       'Создана учётная запись в AD, выдан временный пароль. Пользователю отправлено письмо с инструкцией по первому входу и обязательной смене пароля через самосервисный портал.',
   },
   {
-    id: 3,
+    id: 'inc-003',
     number: 'INC0035209',
+    recordId: 'c3d4e5f6a1b2',
     description: 'Не удаётся подключиться к VPN из домашней сети',
     resolution:
-      'Переустановлен VPN-клиент, обновлены сертификаты пользователя. Проблема заключалась в истёкшем сертификате. VPN-подключение восстановлено и протестировано.',
+      'Переустановлен VPN-клиент, обновлены сертификаты пользователя. Причина — истёкший клиентский сертификат. VPN-подключение восстановлено и протестировано.',
   },
 ];
 
 const BOT_REPLIES = [
-  'На основе описания заявки рекомендую проверить настройки учётной записи в Active Directory — возможна блокировка или истечение срока пароля.',
-  'Похожие инциденты чаще всего решаются перезапуском службы или очисткой кэша. Попробуйте эти шаги и сообщите о результате.',
-  'Для данной категории заявок средний SLA составляет 4 часа. Рекомендую эскалировать в L2, если проблема не решена за 2 часа.',
-  'Нашёл 3 похожие заявки в базе. Наиболее вероятное решение — сброс пароля и проверка прав доступа пользователя.',
+  {
+    text: 'На основе описания рекомендую проверить настройки учётной записи в Active Directory — вероятна блокировка или истечение срока пароля.',
+    citations: [{ label: 'KB: Сброс пароля AD', id: 'kb-001' }, { label: 'INC0041872', id: 'inc-001' }],
+  },
+  {
+    text: 'Похожие инциденты решались перезапуском службы или очисткой кэша браузера. Попробуйте эти шаги и сообщите о результате.',
+    citations: [{ label: 'INC0038541', id: 'inc-002' }],
+  },
+  {
+    text: 'Для данной категории заявок средний SLA составляет 4 часа. Рекомендую эскалировать в L2, если проблема не решена за 2 часа.',
+    citations: [],
+  },
+  {
+    text: 'Нашёл 3 похожие заявки. Наиболее вероятное решение — сброс пароля и проверка прав доступа пользователя.',
+    citations: [{ label: 'KB: VPN-подключение', id: 'kb-002' }, { label: 'INC0035209', id: 'inc-003' }],
+  },
 ];
 
 // --- Root app ---
 function App() {
   const simpleoneOrigin = normalizeOrigin(getParam('simpleone_origin'));
-  const tableName = getParam('table_name');
-  const recordId = getParam('record_id');
-  const number = getParam('number');
-
+  const [ctx, setCtx] = useState({
+    tableName: getParam('table_name'),
+    recordId: getParam('record_id'),
+    number: getParam('number'),
+    subject: getParam('subject') || 'Не удаётся войти в корпоративный портал',
+    csrfToken: '',
+  });
+  const [applied, setApplied] = useState(false);
   const isIframe = window.parent !== window;
-  const targetOrigin = simpleoneOrigin || '*';
+
+  // Incoming handshake from SimpleOne
+  useEffect(() => {
+    if (!simpleoneOrigin) return;
+    function onMessage(e) {
+      if (e.origin !== simpleoneOrigin) return;
+      if (e.data?.type === 'copilot.handshake') {
+        const p = e.data.payload || {};
+        setCtx(prev => ({
+          ...prev,
+          recordId:   p.record_id   || prev.recordId,
+          tableName:  p.table_name  || prev.tableName,
+          csrfToken:  p.csrf_token  || '',
+        }));
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [simpleoneOrigin]);
 
   function post(type, payload = {}) {
-    if (!isIframe) return;
-    window.parent.postMessage(
-      { type, payload: { ...payload, table_name: tableName, record_id: recordId, number } },
-      targetOrigin,
-    );
+    if (!isIframe || !simpleoneOrigin) return;
+    window.parent.postMessage({ type, payload }, simpleoneOrigin);
+  }
+
+  function closeModal()   { post('copilot.close_modal'); }
+  function insertSolution(text, sourceType, sourceId) {
+    post('copilot.insert_solution', { text });
+    setApplied(true);
+  }
+  function sendFeedback(value, sourceType, sourceId) {
+    post('copilot.feedback', { value, source_type: sourceType, source_id: sourceId });
+  }
+  function linkTicket(relatedRecordId, relatedNumber) {
+    post('copilot.link_ticket', { related_record_id: relatedRecordId, related_number: relatedNumber });
+  }
+  function markApplied() {
+    post('copilot.feedback', { value: 'applied', source_type: 'manual', source_id: '' });
+    setApplied(true);
   }
 
   return (
     <div className="cp-modal">
-      <Header onClose={() => post('copilot.close_modal')} />
-      <Body onInsert={(text) => post('copilot.insert_solution', { text })} />
-      <Footer onClose={() => post('copilot.close_modal')} />
+      <Header number={ctx.number} subject={ctx.subject} onClose={closeModal} />
+      <Body onInsert={insertSolution} onFeedback={sendFeedback} onLink={linkTicket} />
+      <Footer applied={applied} onApplied={markApplied} />
     </div>
   );
 }
 
 // --- Header ---
-function Header({ onClose }) {
-  const [busy, setBusy] = useState(false);
+function Header({ number, subject, onClose }) {
+  const [summarizing, setSummarizing] = useState(false);
 
   function summarize() {
-    setBusy(true);
-    setTimeout(() => setBusy(false), 1800);
+    setSummarizing(true);
+    setTimeout(() => setSummarizing(false), 2000);
   }
 
   return (
     <header className="cp-header">
-      <div className="cp-header-brand">
-        <svg className="cp-icon-logo" viewBox="0 0 20 20" fill="none">
-          <circle cx="10" cy="10" r="8" fill="#2458e6" opacity=".12" />
-          <path d="M10 4l1.5 4.5H16l-3.75 2.7 1.44 4.3L10 13.1l-3.69 2.4 1.44-4.3L4 8.5h4.5L10 4z" fill="#2458e6" />
-        </svg>
-        <h1 className="cp-title">Копайлот</h1>
+      <div className="cp-header-left">
+        <div className="cp-logo">
+          <svg viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="10" fill="#2563eb" opacity=".15" />
+            <path d="M12 5l2 5.5h5.5l-4.5 3.2 1.7 5.3L12 16l-4.7 3 1.7-5.3L4.5 10.5H10L12 5z" fill="#2563eb" />
+          </svg>
+        </div>
+        <div className="cp-header-title-block">
+          <h1 className="cp-title">Копайлот</h1>
+          {(number || subject) && (
+            <p className="cp-subtitle">
+              {number && <span className="cp-ticket-chip">{number}</span>}
+              {subject && <span className="cp-subject-text">{subject}</span>}
+            </p>
+          )}
+        </div>
       </div>
-      <div className="cp-header-actions">
+      <div className="cp-header-right">
         <button
-          className={`cp-btn cp-btn-outline ${busy ? 'cp-btn-busy' : ''}`}
+          className={`cp-btn cp-btn-outline${summarizing ? ' cp-btn--loading' : ''}`}
           onClick={summarize}
-          disabled={busy}
+          disabled={summarizing}
         >
-          {busy ? 'Анализирую…' : 'Суммировать заявку'}
+          {summarizing ? (
+            <><span className="cp-spinner" /> Анализирую…</>
+          ) : 'Суммировать заявку'}
         </button>
         <button className="cp-btn-icon" onClick={onClose} aria-label="Закрыть">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8">
-            <line x1="3" y1="3" x2="13" y2="13" />
-            <line x1="13" y1="3" x2="3" y2="13" />
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <line x1="3" y1="3" x2="13" y2="13" /><line x1="13" y1="3" x2="3" y2="13" />
           </svg>
         </button>
       </div>
@@ -145,15 +208,14 @@ function Header({ onClose }) {
   );
 }
 
-// --- Body with tabs ---
-function Body({ onInsert }) {
+// --- Body ---
+function Body({ onInsert, onFeedback, onLink }) {
   const [tab, setTab] = useState('hints');
   const TABS = [
-    { id: 'hints', label: 'Подсказки ИИ' },
+    { id: 'hints',   label: 'Подсказки ИИ' },
     { id: 'similar', label: 'Похожие заявки' },
-    { id: 'chat', label: 'Чат' },
+    { id: 'chat',    label: 'Чат' },
   ];
-
   return (
     <div className="cp-body">
       <nav className="cp-tabs" role="tablist">
@@ -161,58 +223,83 @@ function Body({ onInsert }) {
           <button
             key={t.id}
             role="tab"
+            className={`cp-tab${tab === t.id ? ' active' : ''}`}
             aria-selected={tab === t.id}
-            className={`cp-tab ${tab === t.id ? 'active' : ''}`}
             onClick={() => setTab(t.id)}
           >
             {t.label}
           </button>
         ))}
       </nav>
-      <div className="cp-tab-panel" role="tabpanel">
-        {tab === 'hints' && <HintsTab onInsert={onInsert} />}
-        {tab === 'similar' && <SimilarTab onInsert={onInsert} />}
-        {tab === 'chat' && <ChatTab />}
+      <div className="cp-panel" role="tabpanel">
+        {tab === 'hints'   && <HintsTab   onInsert={onInsert} onFeedback={onFeedback} />}
+        {tab === 'similar' && <SimilarTab onInsert={onInsert} onFeedback={onFeedback} onLink={onLink} />}
+        {tab === 'chat'    && <ChatTab    onInsert={onInsert} />}
       </div>
     </div>
   );
 }
 
-// --- Tab: Подсказки ИИ ---
-function HintsTab({ onInsert }) {
-  const [ready, setReady] = useState(false);
+// --- Skeleton card ---
+function SkeletonCard() {
+  return (
+    <div className="cp-card cp-card--skeleton">
+      <div className="sk sk-w55" />
+      <div className="sk sk-w100" />
+      <div className="sk sk-w80" />
+      <div className="sk sk-w40 sk-btn" />
+    </div>
+  );
+}
 
+// --- Feedback row ---
+function FeedbackRow({ sourceType, sourceId, onFeedback }) {
+  const [vote, setVote] = useState(null);
+  function cast(v) {
+    setVote(v);
+    onFeedback(v, sourceType, sourceId);
+  }
+  return (
+    <div className="cp-feedback-row">
+      <span className="cp-feedback-label">Полезно?</span>
+      <button
+        className={`cp-vote-btn${vote === 'helpful' ? ' active' : ''}`}
+        onClick={() => cast('helpful')}
+        title="Полезно"
+      >👍</button>
+      <button
+        className={`cp-vote-btn${vote === 'not_helpful' ? ' active' : ''}`}
+        onClick={() => cast('not_helpful')}
+        title="Не полезно"
+      >👎</button>
+    </div>
+  );
+}
+
+// --- Tab: Подсказки ИИ ---
+function HintsTab({ onInsert, onFeedback }) {
+  const [ready, setReady] = useState(false);
   useEffect(() => {
-    const t = setTimeout(() => setReady(true), 1300);
+    const t = setTimeout(() => setReady(true), 1000);
     return () => clearTimeout(t);
   }, []);
 
   if (!ready) {
-    return (
-      <ul className="cp-card-list">
-        {[0, 1, 2].map(i => (
-          <li key={i} className="cp-card cp-skeleton">
-            <div className="sk-line sk-w60" />
-            <div className="sk-line sk-w100" />
-            <div className="sk-line sk-w80" />
-            <div className="sk-btn" />
-          </li>
-        ))}
-      </ul>
-    );
+    return <ul className="cp-card-list">{KB_ARTICLES.map(a => <li key={a.id}><SkeletonCard /></li>)}</ul>;
   }
 
   return (
     <ul className="cp-card-list">
       {KB_ARTICLES.map(a => (
         <li key={a.id} className="cp-card">
-          <a href="#" className="cp-card-link" onClick={e => e.preventDefault()}>
-            {a.title}
-          </a>
+          <a href={a.url} className="cp-card-link" target="_blank" rel="noreferrer">{a.title}</a>
           <p className="cp-card-text">{a.excerpt}</p>
-          <button className="cp-btn cp-btn-action" onClick={() => onInsert(a.solution)}>
-            Вставить решение
-          </button>
+          <div className="cp-card-actions">
+            <button className="cp-btn cp-btn-action" onClick={() => onInsert(a.solution, 'kb_article', a.id)}>
+              Вставить решение
+            </button>
+            <FeedbackRow sourceType="kb_article" sourceId={a.id} onFeedback={onFeedback} />
+          </div>
         </li>
       ))}
     </ul>
@@ -220,20 +307,46 @@ function HintsTab({ onInsert }) {
 }
 
 // --- Tab: Похожие заявки ---
-function SimilarTab({ onInsert }) {
+function SimilarCard({ ticket, onInsert, onFeedback, onLink }) {
+  const [expanded, setExpanded] = useState(false);
+  const SHORT = 120;
+  const isLong = ticket.resolution.length > SHORT;
+  const displayText = expanded || !isLong
+    ? ticket.resolution
+    : ticket.resolution.slice(0, SHORT) + '…';
+
+  return (
+    <li className="cp-card">
+      <div className="cp-ticket-meta">
+        <span className="cp-badge">{ticket.number}</span>
+        <span className="cp-ticket-desc">{ticket.description}</span>
+      </div>
+      <p className="cp-card-text">
+        {displayText}
+        {isLong && (
+          <button className="cp-expand-btn" onClick={() => setExpanded(e => !e)}>
+            {expanded ? ' Свернуть' : ' Показать полностью'}
+          </button>
+        )}
+      </p>
+      <div className="cp-card-actions">
+        <button className="cp-btn cp-btn-action" onClick={() => onInsert(ticket.resolution, 'similar_ticket', ticket.id)}>
+          Клонировать решение
+        </button>
+        <button className="cp-btn cp-btn-ghost" onClick={() => onLink(ticket.recordId, ticket.number)}>
+          Связать заявку
+        </button>
+        <FeedbackRow sourceType="similar_ticket" sourceId={ticket.id} onFeedback={onFeedback} />
+      </div>
+    </li>
+  );
+}
+
+function SimilarTab({ onInsert, onFeedback, onLink }) {
   return (
     <ul className="cp-card-list">
       {SIMILAR_TICKETS.map(t => (
-        <li key={t.id} className="cp-card">
-          <div className="cp-ticket-meta">
-            <span className="cp-badge">{t.number}</span>
-            <span className="cp-ticket-desc">{t.description}</span>
-          </div>
-          <p className="cp-card-text">{t.resolution}</p>
-          <button className="cp-btn cp-btn-action" onClick={() => onInsert(t.resolution)}>
-            Клонировать решение
-          </button>
-        </li>
+        <SimilarCard key={t.id} ticket={t} onInsert={onInsert} onFeedback={onFeedback} onLink={onLink} />
       ))}
     </ul>
   );
@@ -242,26 +355,26 @@ function SimilarTab({ onInsert }) {
 // --- Tab: Чат ---
 function ChatTab() {
   const [msgs, setMsgs] = useState([
-    { role: 'bot', text: 'Привет! Я Копайлот. Задайте вопрос по текущей заявке.' },
+    { role: 'bot', text: 'Привет! Я Копайлот. Задайте вопрос по текущей заявке — постараюсь помочь.', citations: [] },
   ]);
-  const [input, setInput] = useState('');
+  const [input, setInput]   = useState('');
   const [waiting, setWaiting] = useState(false);
   const bottomRef = useRef(null);
+  const replyIdx  = useRef(0);
 
   function send() {
     const text = input.trim();
     if (!text || waiting) return;
-
-    const next = [...msgs, { role: 'user', text }];
+    const next = [...msgs, { role: 'user', text, citations: [] }];
     setMsgs(next);
     setInput('');
     setWaiting(true);
-
     setTimeout(() => {
-      const reply = BOT_REPLIES[next.length % BOT_REPLIES.length];
-      setMsgs(prev => [...prev, { role: 'bot', text: reply }]);
+      const reply = BOT_REPLIES[replyIdx.current % BOT_REPLIES.length];
+      replyIdx.current++;
+      setMsgs(prev => [...prev, { role: 'bot', ...reply }]);
       setWaiting(false);
-    }, 700);
+    }, 800);
   }
 
   useEffect(() => {
@@ -272,15 +385,28 @@ function ChatTab() {
     <div className="cp-chat">
       <div className="cp-chat-messages">
         {msgs.map((m, i) => (
-          <div key={i} className={`cp-msg cp-msg-${m.role}`}>
-            <span className="cp-msg-bubble">{m.text}</span>
+          <div key={i} className={`cp-msg cp-msg--${m.role}`}>
+            {m.role === 'bot' && <div className="cp-avatar">AI</div>}
+            <div className="cp-msg-body">
+              <span className="cp-msg-bubble">{m.text}</span>
+              {m.citations?.length > 0 && (
+                <div className="cp-citations">
+                  {m.citations.map(c => (
+                    <a key={c.id} href={`#${c.id}`} className="cp-citation-chip">{c.label}</a>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ))}
         {waiting && (
-          <div className="cp-msg cp-msg-bot">
-            <span className="cp-msg-bubble cp-typing">
-              <span /><span /><span />
-            </span>
+          <div className="cp-msg cp-msg--bot">
+            <div className="cp-avatar">AI</div>
+            <div className="cp-msg-body">
+              <span className="cp-msg-bubble cp-typing">
+                <span /><span /><span />
+              </span>
+            </div>
           </div>
         )}
         <div ref={bottomRef} />
@@ -289,12 +415,10 @@ function ChatTab() {
         <textarea
           className="cp-chat-input"
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-          }}
-          placeholder="Введите сообщение… (Enter — отправить)"
           rows={2}
+          placeholder="Введите сообщение… (Enter — отправить)"
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
         />
         <button className="cp-btn cp-btn-primary" onClick={send} disabled={waiting}>
           Отправить
@@ -305,31 +429,20 @@ function ChatTab() {
 }
 
 // --- Footer ---
-function Footer({ onClose }) {
-  const [vote, setVote] = useState(null);
-
+function Footer({ applied, onApplied }) {
   return (
     <footer className="cp-footer">
-      <div className="cp-feedback">
-        <span className="cp-feedback-label">Полезно?</span>
-        <button
-          className={`cp-btn cp-btn-vote ${vote === 'up' ? 'voted' : ''}`}
-          onClick={() => setVote('up')}
-          aria-pressed={vote === 'up'}
-        >
-          👍 Полезно
-        </button>
-        <button
-          className={`cp-btn cp-btn-vote ${vote === 'down' ? 'voted' : ''}`}
-          onClick={() => setVote('down')}
-          aria-pressed={vote === 'down'}
-        >
-          👎 Не полезно
-        </button>
-      </div>
-      <button className="cp-btn cp-btn-ghost" onClick={onClose}>
-        Закрыть
+      <button
+        className={`cp-btn${applied ? ' cp-btn-applied' : ' cp-btn-outline'}`}
+        onClick={onApplied}
+        disabled={applied}
+      >
+        {applied ? 'Применено ✓' : 'Применено ✓'}
       </button>
+      <div className="cp-ai-status">
+        <span className="cp-status-dot cp-status-dot--online" />
+        ИИ доступен
+      </div>
     </footer>
   );
 }
