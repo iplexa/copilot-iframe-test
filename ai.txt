@@ -1,0 +1,45 @@
+Look at the current frontend implementation in this project.
+
+Your task: refactor and redesign the UI of the Copilot modal window for a SimpleOne ITSM integration.
+
+First, explore the project structure and read all relevant frontend files (HTML, JS, CSS — widgets, UI actions, modal templates).
+
+Then redesign the modal UI with these requirements:
+
+**Layout (modal window, MVP):**
+- Header: title "Копайлот", close button (×), and a "Суммировать заявку" button
+- Tab navigation: "Подсказки ИИ" | "Похожие заявки" | "Чат"
+- Footer: feedback buttons (👍 Полезно / 👎 Не полезно) + "Закрыть"
+
+**Tab: "Подсказки ИИ"**
+- Skeleton loader placeholder (simulated, no real API call)
+- 2–3 hardcoded mock KB article cards:
+  - Article title (linked)
+  - Short excerpt (2–3 lines)
+  - "Вставить решение" button (fills a form field, does not save)
+
+**Tab: "Похожие заявки"**
+- 2–3 hardcoded mock resolved ticket cards:
+  - Ticket number + short description
+  - Resolution summary
+  - "Клонировать решение" button
+
+**Tab: "Чат"**
+- Chat message history area
+- Text input + "Отправить" button
+- Hardcoded mock bot reply after user sends a message (no real API)
+
+**Design requirements:**
+- Clean, professional look — suitable for an enterprise ITSM tool
+- Neutral color palette (white/light gray background, blue accents)
+- Responsive within modal bounds (min-width: 600px)
+- No external CSS frameworks — pure CSS or inline styles only (SimpleOne widget constraint)
+- All text in Russian
+- No calls to any backend or LLM — all data is hardcoded mock
+
+**Code output:**
+- Single self-contained HTML/JS/CSS file representing the modal content
+- Compatible with SimpleOne widget or UI Action modal (no external dependencies)
+- Add a comment block at the top explaining where each section maps to in SimpleOne architecture
+
+Do not change any backend logic. Focus only on the frontend modal UI.

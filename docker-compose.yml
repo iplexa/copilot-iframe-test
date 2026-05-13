@@ -1,0 +1,14 @@
+services:
+  copilot-frontend:
+    build: .
+    container_name: copilot-frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - caddy_network
+
+networks:
+  caddy_network:
+    external: true
+    name: remnawave-network
