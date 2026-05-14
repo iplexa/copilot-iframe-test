@@ -471,6 +471,30 @@ a  { color: inherit; text-decoration: none; }
 }
 .cp-chat-input:focus { border-color: #2563eb; }
 
+/* ── Markdown in bot messages ─────────────────── */
+.cp-msg--bot .cp-msg-bubble strong { font-weight: 700; }
+.cp-msg--bot .cp-msg-bubble em     { font-style: italic; }
+.cp-msg--bot .cp-msg-bubble code {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: ui-monospace, monospace;
+  font-size: .88em;
+  color: #1e293b;
+}
+.cp-msg--bot .cp-msg-bubble .md-li {
+  display: block;
+  padding-left: 16px;
+  position: relative;
+}
+.cp-msg--bot .cp-msg-bubble .md-li::before {
+  content: '•';
+  position: absolute;
+  left: 5px;
+  color: #64748b;
+}
+
 /* ── Footer ───────────────────────────────────── */
 .cp-footer {
   display: flex;

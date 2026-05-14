@@ -14,6 +14,22 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
+// Converts a subset of markdown to safe HTML (bot messages only).
+// HTML is escaped first so DeepSeek output can't inject tags.
+function mdToHtml(text) {
+  const html = text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*\*(.+?)\*\*\*/gs,  '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/gs,      '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/gs,          '<em>$1</em>')
+    .replace(/`([^`]+)`/g,           '<code>$1</code>')
+    .replace(/^#{1,3} +(.+)$/gm,     '<strong>$1</strong>')
+    .replace(/^[ \t]*[-*] +(.+)$/gm, '<span class="md-li">$1</span>')
+    .replace(/^[ \t]*\d+\. +(.+)$/gm,'<span class="md-li">$1</span>')
+    .replace(/\n/g, '<br>');
+  return { __html: html };
+}
+
 function getParam(name) {
   return new URLSearchParams(window.location.search).get(name) || '';
 }
@@ -503,7 +519,10 @@ function ChatTab({ ctx }) {
           <div key={i} className={`cp-msg cp-msg--${m.role}`}>
             {m.role === 'bot' && <div className="cp-avatar">AI</div>}
             <div className="cp-msg-body">
-              <span className="cp-msg-bubble">{m.text}</span>
+              {m.role === 'bot'
+                ? <span className="cp-msg-bubble" dangerouslySetInnerHTML={mdToHtml(m.text)} />
+                : <span className="cp-msg-bubble">{m.text}</span>
+              }
               {m.citations?.length > 0 && (
                 <div className="cp-citations">
                   {m.citations.map(c => (
