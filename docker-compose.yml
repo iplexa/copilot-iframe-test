@@ -1,14 +1,13 @@
 services:
   copilot-frontend:
-    build:
-      context: .
-      args:
-        - VITE_YANDEX_API_KEY
-        - VITE_YANDEX_FOLDER_ID
+    build: .
     container_name: copilot-frontend
     restart: unless-stopped
     expose:
       - "80"
+    environment:
+      - YANDEX_API_KEY=${YANDEX_API_KEY}
+      - YANDEX_FOLDER_ID=${YANDEX_FOLDER_ID}
     networks:
       - caddy_network
 
