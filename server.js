@@ -71,6 +71,46 @@ app.post('/api/analyze', async (req, res) => {
   }
 });
 
+app.post('/api/chat', async (req, res) => {
+  const { messages = [], ctx = {} } = req.body;
+
+  const systemText = `Ты ИИ-ассистент IT-службы поддержки (ITSM). Отвечай по-русски, кратко и по делу.
+Контекст текущей заявки:
+Номер: ${ctx.number || '—'}
+Тема: ${ctx.subject || '—'}
+Описание: ${ctx.description || '—'}
+Приоритет: ${ctx.priority || '—'}
+Услуга: ${ctx.service || '—'}
+Группа: ${ctx.assignment_group || '—'}
+Если вопрос выходит за рамки заявки — всё равно помогай в рамках IT-поддержки.`;
+
+  try {
+    const upstream = await fetch(DEEPSEEK, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        temperature: 0.4,
+        max_tokens: 1000,
+        messages: [{ role: 'system', content: systemText }, ...messages],
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+
+    const json = await upstream.json();
+    if (!upstream.ok) {
+      return res.status(502).json({ ok: false, error: `DeepSeek HTTP ${upstream.status}` });
+    }
+    res.json({ ok: true, text: json?.choices?.[0]?.message?.content ?? '' });
+  } catch (err) {
+    console.error('[deepseek/chat] error:', err.message);
+    res.status(502).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/health', (_req, res) => res.send('ok'));
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

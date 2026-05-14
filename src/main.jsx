@@ -230,6 +230,7 @@ function App() {
         onLink={linkTicket}
         analysisData={analysisData}
         analysisStatus={analysisStatus}
+        ctx={ctx}
       />
       <Footer applied={applied} onApplied={markApplied} aiStatus={analysisStatus} />
     </div>
@@ -285,7 +286,7 @@ function Header({ number, subject, onClose }) {
 }
 
 // --- Body ---
-function Body({ onInsert, onFeedback, onLink, analysisData, analysisStatus }) {
+function Body({ onInsert, onFeedback, onLink, analysisData, analysisStatus, ctx }) {
   const [tab, setTab] = useState('hints');
   const TABS = [
     { id: 'hints',   label: 'Подсказки ИИ' },
@@ -310,7 +311,7 @@ function Body({ onInsert, onFeedback, onLink, analysisData, analysisStatus }) {
       <div className="cp-panel" role="tabpanel">
         {tab === 'hints'   && <HintsTab   onInsert={onInsert} onFeedback={onFeedback} analysisData={analysisData} analysisStatus={analysisStatus} />}
         {tab === 'similar' && <SimilarTab onInsert={onInsert} onFeedback={onFeedback} onLink={onLink}            analysisData={analysisData} analysisStatus={analysisStatus} />}
-        {tab === 'chat'    && <ChatTab    onInsert={onInsert} />}
+        {tab === 'chat'    && <ChatTab    onInsert={onInsert} ctx={ctx} />}
       </div>
     </div>
   );
@@ -448,28 +449,42 @@ function SimilarTab({ onInsert, onFeedback, onLink, analysisData, analysisStatus
 }
 
 // --- Tab: Чат ---
-function ChatTab() {
+function ChatTab({ ctx }) {
   const [msgs, setMsgs] = useState([
     { role: 'bot', text: 'Привет! Я Копайлот. Задайте вопрос по текущей заявке — постараюсь помочь.', citations: [] },
   ]);
-  const [input, setInput]   = useState('');
+  const [input, setInput]     = useState('');
   const [waiting, setWaiting] = useState(false);
   const bottomRef = useRef(null);
-  const replyIdx  = useRef(0);
 
-  function send() {
+  async function send() {
     const text = input.trim();
     if (!text || waiting) return;
     const next = [...msgs, { role: 'user', text, citations: [] }];
     setMsgs(next);
     setInput('');
     setWaiting(true);
-    setTimeout(() => {
-      const reply = BOT_REPLIES[replyIdx.current % BOT_REPLIES.length];
-      replyIdx.current++;
-      setMsgs(prev => [...prev, { role: 'bot', ...reply }]);
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ctx,
+          messages: next.map(m => ({
+            role:    m.role === 'bot' ? 'assistant' : 'user',
+            content: m.text,
+          })),
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json();
+      const reply = (data.ok && data.text) ? data.text : 'Не удалось получить ответ. Попробуйте ещё раз.';
+      setMsgs(prev => [...prev, { role: 'bot', text: reply, citations: [] }]);
+    } catch {
+      setMsgs(prev => [...prev, { role: 'bot', text: 'Ошибка соединения с ИИ. Попробуйте ещё раз.', citations: [] }]);
+    } finally {
       setWaiting(false);
-    }, 800);
+    }
   }
 
   useEffect(() => {
