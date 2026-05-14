@@ -1,6 +1,10 @@
 services:
   copilot-frontend:
-    build: .
+    build:
+      context: .
+      args:
+        - VITE_YANDEX_API_KEY
+        - VITE_YANDEX_FOLDER_ID
     container_name: copilot-frontend
     restart: unless-stopped
     expose:

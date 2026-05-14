@@ -10,7 +10,7 @@
 //   { type: 'copilot.link_ticket',      payload: { related_record_id, related_number } }
 //   { type: 'copilot.feedback',         payload: { value, source_type, source_id } }
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -19,6 +19,64 @@ function getParam(name) {
 }
 function normalizeOrigin(v) {
   try { return new URL(v).origin; } catch { return ''; }
+}
+
+// --- Yandex Cloud AI Studio (temporary) ---
+// ⚠️  API key is bundled into client JS — for testing only, rotate before production
+const _YA_KEY      = import.meta.env.VITE_YANDEX_API_KEY   || '';
+const _YA_FOLDER   = import.meta.env.VITE_YANDEX_FOLDER_ID || '';
+const _YA_ENDPOINT = 'https://llm.api.cloud.yandex.net/foundationModels/v1/completion';
+const _YA_MODEL    = `gpt://${_YA_FOLDER}/yandexgpt/latest`;
+
+async function callYandexAI(ctx) {
+  const systemText = `Ты ИИ-ассистент IT-службы поддержки (ITSM).
+Проанализируй заявку и верни ТОЛЬКО валидный JSON без markdown-обёртки строго по схеме:
+{
+  "summary": "резюме проблемы в 1-2 предложениях",
+  "kb_articles": [
+    {"id":"kb-1","title":"...","url":"#","excerpt":"краткий отрывок","solution":"текст решения"}
+  ],
+  "similar_tickets": [
+    {"id":"inc-1","number":"INCxxxxxxx","record_id":"","description":"...","resolution":"..."}
+  ],
+  "draft_solution": "черновик решения для инженера"
+}
+Верни 2-3 статьи базы знаний и 2-3 похожих инцидента, релевантных описанию заявки.`;
+
+  const userText = [
+    `Номер: ${ctx.number           || '—'}`,
+    `Тема: ${ctx.subject           || '—'}`,
+    `Описание: ${ctx.description   || ctx.subject || '—'}`,
+    `Приоритет: ${ctx.priority     || '—'}`,
+    `Категория: ${ctx.category     || '—'}`,
+    `Услуга: ${ctx.service         || '—'}`,
+    `Группа: ${ctx.assignment_group || '—'}`,
+  ].join('\n');
+
+  const res = await fetch(_YA_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Api-Key ${_YA_KEY}`,
+      'x-folder-id': _YA_FOLDER,
+    },
+    body: JSON.stringify({
+      modelUri: _YA_MODEL,
+      completionOptions: { stream: false, temperature: 0.1, maxTokens: '2000' },
+      messages: [
+        { role: 'system', text: systemText },
+        { role: 'user',   text: userText },
+      ],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Yandex AI HTTP ${res.status}`);
+
+  const json = await res.json();
+  const raw  = json?.result?.alternatives?.[0]?.message?.text ?? '';
+  // strip possible markdown fences the model might add despite the prompt
+  const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
+  return JSON.parse(clean);
 }
 
 // --- Mock data ---
@@ -109,26 +167,91 @@ function App() {
     csrfToken: '',
   });
   const [applied, setApplied] = useState(false);
+  const [analysisData, setAnalysisData]     = useState(null);
+  const [analysisStatus, setAnalysisStatus] = useState('idle'); // 'idle'|'loading'|'ready'|'error'|'timeout'
+  const analysisTimerRef = useRef(null);
   const isIframe = window.parent !== window;
 
-  // Incoming handshake from SimpleOne
+  // Start a Yandex AI analysis request; sets loading/ready/error state automatically
+  const triggerYandexAnalysis = useCallback((aiCtx) => {
+    setAnalysisStatus('loading');
+    clearTimeout(analysisTimerRef.current);
+    analysisTimerRef.current = setTimeout(() => {
+      setAnalysisStatus(s => s === 'loading' ? 'timeout' : s);
+    }, 10000);
+
+    callYandexAI(aiCtx)
+      .then(data => {
+        clearTimeout(analysisTimerRef.current);
+        setAnalysisData(data);
+        setAnalysisStatus('ready');
+      })
+      .catch(err => {
+        clearTimeout(analysisTimerRef.current);
+        console.error('[Copilot] Yandex AI error:', err.message);
+        setAnalysisStatus('error');
+      });
+  }, []); // setters and ref are stable across renders
+
+  // Incoming messages from SimpleOne
   useEffect(() => {
     if (!simpleoneOrigin) return;
     function onMessage(e) {
       if (e.origin !== simpleoneOrigin) return;
-      if (e.data?.type === 'copilot.handshake') {
-        const p = e.data.payload || {};
+      const msg = e.data || {};
+
+      if (msg.type === 'copilot.handshake') {
+        const p = msg.payload || {};
         setCtx(prev => ({
           ...prev,
-          recordId:   p.record_id   || prev.recordId,
-          tableName:  p.table_name  || prev.tableName,
-          csrfToken:  p.csrf_token  || '',
+          recordId:  p.record_id  || prev.recordId,
+          tableName: p.table_name || prev.tableName,
+          csrfToken: p.csrf_token || '',
         }));
+        // Read ticket context from URL params (set by SimpleOne when opening iframe)
+        triggerYandexAnalysis({
+          number:           getParam('number'),
+          subject:          getParam('subject'),
+          description:      getParam('description'),
+          priority:         getParam('priority'),
+          category:         getParam('category'),
+          service:          getParam('service'),
+          assignment_group: getParam('assignment_group'),
+        });
+      }
+
+      // Keep this handler: used when SimpleOne backend (CopilotAjaxProcessor) is wired up
+      if (msg.type === 'copilot.analysis_result') {
+        clearTimeout(analysisTimerRef.current);
+        setAnalysisData(msg.payload || null);
+        setAnalysisStatus('ready');
+      }
+
+      if (msg.type === 'copilot.error') {
+        clearTimeout(analysisTimerRef.current);
+        setAnalysisStatus('error');
       }
     }
     window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
-  }, [simpleoneOrigin]);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      clearTimeout(analysisTimerRef.current);
+    };
+  }, [simpleoneOrigin, triggerYandexAnalysis]);
+
+  // Standalone test mode: no SimpleOne → trigger analysis from URL params on mount
+  useEffect(() => {
+    if (simpleoneOrigin) return; // SimpleOne will send handshake
+    triggerYandexAnalysis({
+      number:           getParam('number'),
+      subject:          getParam('subject'),
+      description:      getParam('description'),
+      priority:         getParam('priority'),
+      category:         getParam('category'),
+      service:          getParam('service'),
+      assignment_group: getParam('assignment_group'),
+    });
+  }, [triggerYandexAnalysis]); // triggerYandexAnalysis is stable (useCallback [])
 
   function post(type, payload = {}) {
     if (!isIframe || !simpleoneOrigin) return;
@@ -154,8 +277,14 @@ function App() {
   return (
     <div className="cp-modal">
       <Header number={ctx.number} subject={ctx.subject} onClose={closeModal} />
-      <Body onInsert={insertSolution} onFeedback={sendFeedback} onLink={linkTicket} />
-      <Footer applied={applied} onApplied={markApplied} />
+      <Body
+        onInsert={insertSolution}
+        onFeedback={sendFeedback}
+        onLink={linkTicket}
+        analysisData={analysisData}
+        analysisStatus={analysisStatus}
+      />
+      <Footer applied={applied} onApplied={markApplied} aiStatus={analysisStatus} />
     </div>
   );
 }
@@ -209,7 +338,7 @@ function Header({ number, subject, onClose }) {
 }
 
 // --- Body ---
-function Body({ onInsert, onFeedback, onLink }) {
+function Body({ onInsert, onFeedback, onLink, analysisData, analysisStatus }) {
   const [tab, setTab] = useState('hints');
   const TABS = [
     { id: 'hints',   label: 'Подсказки ИИ' },
@@ -232,8 +361,8 @@ function Body({ onInsert, onFeedback, onLink }) {
         ))}
       </nav>
       <div className="cp-panel" role="tabpanel">
-        {tab === 'hints'   && <HintsTab   onInsert={onInsert} onFeedback={onFeedback} />}
-        {tab === 'similar' && <SimilarTab onInsert={onInsert} onFeedback={onFeedback} onLink={onLink} />}
+        {tab === 'hints'   && <HintsTab   onInsert={onInsert} onFeedback={onFeedback} analysisData={analysisData} analysisStatus={analysisStatus} />}
+        {tab === 'similar' && <SimilarTab onInsert={onInsert} onFeedback={onFeedback} onLink={onLink}            analysisData={analysisData} analysisStatus={analysisStatus} />}
         {tab === 'chat'    && <ChatTab    onInsert={onInsert} />}
       </div>
     </div>
@@ -277,32 +406,35 @@ function FeedbackRow({ sourceType, sourceId, onFeedback }) {
 }
 
 // --- Tab: Подсказки ИИ ---
-function HintsTab({ onInsert, onFeedback }) {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setReady(true), 1000);
-    return () => clearTimeout(t);
-  }, []);
-
-  if (!ready) {
+function HintsTab({ onInsert, onFeedback, analysisData, analysisStatus }) {
+  if (analysisStatus === 'idle' || analysisStatus === 'loading') {
     return <ul className="cp-card-list">{KB_ARTICLES.map(a => <li key={a.id}><SkeletonCard /></li>)}</ul>;
   }
 
+  const serverArticles = analysisData?.kb_articles;
+  const items = (serverArticles && serverArticles.length > 0) ? serverArticles : KB_ARTICLES;
+  const showNotice = analysisStatus === 'error' || analysisStatus === 'timeout';
+
   return (
-    <ul className="cp-card-list">
-      {KB_ARTICLES.map(a => (
-        <li key={a.id} className="cp-card">
-          <a href={a.url} className="cp-card-link" target="_blank" rel="noreferrer">{a.title}</a>
-          <p className="cp-card-text">{a.excerpt}</p>
-          <div className="cp-card-actions">
-            <button className="cp-btn cp-btn-action" onClick={() => onInsert(a.solution, 'kb_article', a.id)}>
-              Вставить решение
-            </button>
-            <FeedbackRow sourceType="kb_article" sourceId={a.id} onFeedback={onFeedback} />
-          </div>
-        </li>
-      ))}
-    </ul>
+    <>
+      {showNotice && (
+        <div className="cp-ai-notice">ИИ-функции временно недоступны — показаны рекомендации по умолчанию.</div>
+      )}
+      <ul className="cp-card-list">
+        {items.map(a => (
+          <li key={a.id} className="cp-card">
+            <a href={a.url} className="cp-card-link" target="_blank" rel="noreferrer">{a.title}</a>
+            <p className="cp-card-text">{a.excerpt}</p>
+            <div className="cp-card-actions">
+              <button className="cp-btn cp-btn-action" onClick={() => onInsert(a.solution, 'kb_article', a.id)}>
+                Вставить решение
+              </button>
+              <FeedbackRow sourceType="kb_article" sourceId={a.id} onFeedback={onFeedback} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -342,13 +474,29 @@ function SimilarCard({ ticket, onInsert, onFeedback, onLink }) {
   );
 }
 
-function SimilarTab({ onInsert, onFeedback, onLink }) {
+function SimilarTab({ onInsert, onFeedback, onLink, analysisData, analysisStatus }) {
+  if (analysisStatus === 'idle' || analysisStatus === 'loading') {
+    return <ul className="cp-card-list">{SIMILAR_TICKETS.map(t => <li key={t.id}><SkeletonCard /></li>)}</ul>;
+  }
+
+  const serverTickets = analysisData?.similar_tickets;
+  // Normalize server field name (record_id) to match SimilarCard's expected shape (recordId)
+  const items = (serverTickets && serverTickets.length > 0)
+    ? serverTickets.map(t => ({ ...t, recordId: t.record_id || t.recordId || '' }))
+    : SIMILAR_TICKETS;
+  const showNotice = analysisStatus === 'error' || analysisStatus === 'timeout';
+
   return (
-    <ul className="cp-card-list">
-      {SIMILAR_TICKETS.map(t => (
-        <SimilarCard key={t.id} ticket={t} onInsert={onInsert} onFeedback={onFeedback} onLink={onLink} />
-      ))}
-    </ul>
+    <>
+      {showNotice && (
+        <div className="cp-ai-notice">ИИ-функции временно недоступны — показаны примеры.</div>
+      )}
+      <ul className="cp-card-list">
+        {items.map(t => (
+          <SimilarCard key={t.id} ticket={t} onInsert={onInsert} onFeedback={onFeedback} onLink={onLink} />
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -429,7 +577,12 @@ function ChatTab() {
 }
 
 // --- Footer ---
-function Footer({ applied, onApplied }) {
+function Footer({ applied, onApplied, aiStatus }) {
+  const online  = aiStatus === 'ready';
+  const loading = aiStatus === 'idle' || aiStatus === 'loading';
+  const dotClass = online ? 'cp-status-dot--online' : loading ? 'cp-status-dot--loading' : 'cp-status-dot--offline';
+  const label    = online ? 'ИИ доступен' : loading ? 'ИИ подключается…' : 'ИИ недоступен';
+
   return (
     <footer className="cp-footer">
       <button
@@ -440,8 +593,8 @@ function Footer({ applied, onApplied }) {
         {applied ? 'Применено ✓' : 'Применено ✓'}
       </button>
       <div className="cp-ai-status">
-        <span className="cp-status-dot cp-status-dot--online" />
-        ИИ доступен
+        <span className={`cp-status-dot ${dotClass}`} />
+        {label}
       </div>
     </footer>
   );
