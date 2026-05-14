@@ -4,9 +4,8 @@ import { fileURLToPath } from 'url';
 
 const app    = express();
 const PORT   = 80;
-const KEY    = process.env.YANDEX_API_KEY   || '';
-const FOLDER = process.env.YANDEX_FOLDER_ID || '';
-const YANDEX = 'https://llm.api.cloud.yandex.net/foundationModels/v1/completion';
+const KEY      = process.env.DEEPSEEK_API_KEY || '';
+const DEEPSEEK = 'https://api.deepseek.com/v1/chat/completions';
 
 app.use(express.json({ limit: '64kb' }));
 
@@ -38,19 +37,19 @@ app.post('/api/analyze', async (req, res) => {
   ].join('\n');
 
   try {
-    const upstream = await fetch(YANDEX, {
+    const upstream = await fetch(DEEPSEEK, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Api-Key ${KEY}`,
-        'x-folder-id': FOLDER,
+        'Authorization': `Bearer ${KEY}`,
       },
       body: JSON.stringify({
-        modelUri: `gpt://${FOLDER}/yandexgpt/latest`,
-        completionOptions: { stream: false, temperature: 0.1, maxTokens: '2000' },
+        model: 'deepseek-chat',
+        temperature: 0.1,
+        max_tokens: 2000,
         messages: [
-          { role: 'system', text: systemText },
-          { role: 'user',   text: userText },
+          { role: 'system', content: systemText },
+          { role: 'user',   content: userText },
         ],
       }),
       signal: AbortSignal.timeout(12000),
@@ -58,16 +57,16 @@ app.post('/api/analyze', async (req, res) => {
 
     const json = await upstream.json();
     if (!upstream.ok) {
-      console.error('[yandex-ai] error response:', upstream.status, JSON.stringify(json));
-      return res.status(502).json({ ok: false, error: `Yandex AI HTTP ${upstream.status}` });
+      console.error('[deepseek] error response:', upstream.status, JSON.stringify(json));
+      return res.status(502).json({ ok: false, error: `DeepSeek HTTP ${upstream.status}` });
     }
 
-    const raw   = json?.result?.alternatives?.[0]?.message?.text ?? '';
+    const raw   = json?.choices?.[0]?.message?.content ?? '';
     const clean = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/i, '').trim();
     const data  = JSON.parse(clean);
     res.json({ ok: true, ...data });
   } catch (err) {
-    console.error('[yandex-ai] fetch error:', err.message);
+    console.error('[deepseek] fetch error:', err.message);
     res.status(502).json({ ok: false, error: err.message });
   }
 });
