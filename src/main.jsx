@@ -158,22 +158,13 @@ function App() {
 
       if (msg.type === 'copilot.handshake') {
         const p = msg.payload || {};
+        // Only update metadata — analysis already started on mount
         setCtx(prev => ({
           ...prev,
           recordId:  p.record_id  || prev.recordId,
           tableName: p.table_name || prev.tableName,
           csrfToken: p.csrf_token || '',
         }));
-        // Read ticket context from URL params (set by SimpleOne when opening iframe)
-        triggerYandexAnalysis({
-          number:           getParam('number'),
-          subject:          getParam('subject'),
-          description:      getParam('description'),
-          priority:         getParam('priority'),
-          category:         getParam('category'),
-          service:          getParam('service'),
-          assignment_group: getParam('assignment_group'),
-        });
       }
 
       // Keep this handler: used when SimpleOne backend (CopilotAjaxProcessor) is wired up
@@ -195,9 +186,9 @@ function App() {
     };
   }, [simpleoneOrigin, triggerYandexAnalysis]);
 
-  // Standalone test mode: no SimpleOne → trigger analysis from URL params on mount
+  // Always start analysis on mount from URL params — UIAction already embedded them in the iframe URL,
+  // so this works both standalone and when opened from SimpleOne without waiting for handshake.
   useEffect(() => {
-    if (simpleoneOrigin) return; // SimpleOne will send handshake
     triggerYandexAnalysis({
       number:           getParam('number'),
       subject:          getParam('subject'),
@@ -207,7 +198,7 @@ function App() {
       service:          getParam('service'),
       assignment_group: getParam('assignment_group'),
     });
-  }, [triggerYandexAnalysis]); // triggerYandexAnalysis is stable (useCallback [])
+  }, [triggerYandexAnalysis]);
 
   function post(type, payload = {}) {
     if (!isIframe || !simpleoneOrigin) return;
