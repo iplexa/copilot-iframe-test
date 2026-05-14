@@ -116,11 +116,16 @@ const BOT_REPLIES = [
 function App() {
   const simpleoneOrigin = normalizeOrigin(getParam('simpleone_origin'));
   const [ctx, setCtx] = useState({
-    tableName: getParam('table_name'),
-    recordId: getParam('record_id'),
-    number: getParam('number'),
-    subject: getParam('subject') || 'Не удаётся войти в корпоративный портал',
-    csrfToken: '',
+    tableName:        getParam('table_name'),
+    recordId:         getParam('record_id'),
+    number:           getParam('number'),
+    subject:          getParam('subject') || 'Не удаётся войти в корпоративный портал',
+    description:      getParam('description'),
+    priority:         getParam('priority'),
+    category:         getParam('category'),
+    service:          getParam('service'),
+    assignment_group: getParam('assignment_group'),
+    csrfToken:        '',
   });
   const [applied, setApplied] = useState(false);
   const [analysisData, setAnalysisData]     = useState(null);
